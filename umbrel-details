@@ -1,0 +1,125 @@
+#!/bin/bash
+
+# set colors
+color_red='\033[0;31m'
+color_green='\033[0;32m'
+color_amber='\033[0;33m'
+color_yellow='\033[1;93m'
+color_blue='\033[0;94m'
+color_gray='\033[0;37m'
+
+# get memory
+ram_avail=$(free -m | grep Mem | awk '{ print $7 }')
+ram=$(printf "%sM / %sM" "${ram_avail}" "$(free -m | grep Mem | awk '{ print $2 }')")
+
+if [ ${ram_avail} -lt 50 ]; then
+  color_ram="${color_red}\e[7m"
+else
+  color_ram=${color_green}
+fi
+
+# get hdd
+hdd="/dev/sda1"
+hdd_used_space=$(df -h | grep ${hdd} | sed -e's/  */ /g' | cut -d" " -f 3  2>/dev/null)
+hdd_used_ratio=$(df -h | grep ${hdd} | sed -e's/  */ /g' | cut -d" " -f 5 | tr -dc '0-9' 2>/dev/null)
+hddUsedInfo="${hdd_used_space} (${hdd_used_ratio}%)"
+
+# get bitcoin info
+networkVersion=`docker exec bitcoin bitcoin-cli -version 2>/dev/null | cut -d ' ' -f6 | cut -d '-' -f1`
+networkInfo=$(docker exec bitcoin bitcoin-cli getnetworkinfo 2>/dev/null)
+networkConnections=$(echo ${networkInfo} | jq -r '.connections')
+networkConnectionsInfo="${color_green}${networkConnections} ${color_gray}connections"
+
+blockInfo="-"
+blockchaininfo=$(docker exec bitcoin bitcoin-cli getblockchaininfo 2>/dev/null)
+block_chain=$(docker exec bitcoin bitcoin-cli getblockcount 2>/dev/null)
+block_verified="$(echo ${blockchaininfo} | jq -r '.blocks')"
+block_diff=$(expr ${block_chain::-1} - ${block_verified::-1})
+blockInfo="${block_verified}/${block_chain}"
+
+progress="$(echo "${blockchaininfo}" | jq -r '.verificationprogress')"
+sync_percentage=$(echo $progress | awk '{printf( "%.2f%%", 100 * $1)}')
+
+if [ ${block_diff} -eq 0 ]; then    # fully synced
+  sync="OK"
+  sync_color="${color_green}"
+elif [ ${block_diff} -eq 1 ]; then   # fully synced
+  sync="OK"
+  sync_color="${color_green}"
+elif [ ${block_diff} -le 10 ]; then   # <= 2 blocks behind
+  sync=""
+  sync_color="${color_red}"
+else
+  sync=""
+  sync_color="${color_red}"
+fi
+
+# get LDN info
+ln_getInfo=$(docker exec lnd lncli getinfo 2>/dev/null)
+ln_version=$(echo "${ln_getInfo}" | jq -r '.version' | cut -d' ' -f1)
+ln_sync=$(echo "${ln_getInfo}" | grep "synced_to_chain" | grep "true" -c)
+
+if [ ${ln_sync} -eq 0 ]; then
+  if [ ${#ln_getInfo} -eq 0 ]; then
+    ln_baseInfo="${color_red} Not Started | Not Ready Yet"
+  else
+    ln_baseInfo="${color_amber} Waiting for Chain Sync"
+  fi
+else
+  ln_walletbalance="$(docker exec lnd lncli walletbalance | jq -r '.confirmed_balance')" 2>/dev/null
+  ln_walletbalance_wait="$(docker exec lnd lncli walletbalance | jq -r '.unconfirmed_balance')" 2>/dev/null
+  if [ "${ln_walletbalance_wait}" = "0" ]; then ln_walletbalance_wait=""; fi
+  if [ ${#ln_walletbalance_wait} -gt 0 ]; then ln_walletbalance_wait="(+${ln_walletbalance_wait})"; fi
+  ln_channelbalance="$(docker exec lnd lncli channelbalance | jq -r '.balance')" 2>/dev/null
+  ln_channelbalance_pending="$(docker exec lnd lncli channelbalance | jq -r '.pending_open_balance')" 2>/dev/null
+  if [ "${ln_channelbalance_pending}" = "0" ]; then ln_channelbalance_pending=""; fi
+  if [ ${#ln_channelbalance_pending} -gt 0 ]; then ln_channelbalance_pending=" (+${ln_channelbalance_pending})"; fi
+  ln_channels_online="$(echo "${ln_getInfo}" | jq -r '.num_active_channels')" 2>/dev/null
+  ln_channels_total="$(docker exec lnd lncli listchannels | jq '.[] | length')" 2>/dev/null
+  ln_baseInfo="${color_gray}wallet ${ln_walletbalance} sat ${ln_walletbalance_wait}"
+  ln_peers="$(echo "${ln_getInfo}" | jq -r '.num_peers')" 2>/dev/null
+  ln_channelInfo="${ln_channels_online}/${ln_channels_total} Channels ${ln_channelbalance} sat${ln_channelbalance_pending}"
+  ln_peersInfo="${color_green}${ln_peers} ${color_gray}peers"
+  ln_dailyfees="$(docker exec lnd lncli feereport | jq -r '.day_fee_sum')" 2>/dev/null
+  ln_weeklyfees="$(docker exec lnd lncli feereport | jq -r '.week_fee_sum')" 2>/dev/null
+  ln_monthlyfees="$(docker exec lnd lncli feereport | jq -r '.month_fee_sum')" 2>/dev/null
+  ln_feeReport="Fee Report (D-W-M): ${color_green}${ln_dailyfees}-${ln_weeklyfees}-${ln_monthlyfees} ${color_gray}sat"
+fi
+
+# some base values
+uptime=$(uptime --pretty)
+datetime=`date -R | rev | cut -c 7- | rev`
+load=$(w | head -n 1 | cut -d 'v' -f2 | cut -d ':' -f2)
+ln_alias=`hostname`
+network="bitcoin"
+local_ip=`hostname -I | cut -d " " -f1`
+chain="main"
+codeVersion=`cat /etc/default/umbrel | cut -d "=" -f2`
+tempC=`vcgencmd measure_temp | cut -d "=" -f2 | rev | cut -c 3- | rev`
+
+# print screen
+clear
+printf "
+${color_blue}
+${color_blue}
+${color_blue}                   ${color_blue}%s ${color_green} ${ln_alias}.local
+${color_blue}                   ${color_gray}${network} Fullnode + Lightning Network
+${color_blue}    .--------.     ${color_blue}%s
+${color_blue}  .=:        :=.   ${color_gray}%s
+${color_blue} .=:.   ..   .:=.  ${color_gray}%s, temp %s°C
+${color_blue} --::---::---::--  ${color_gray}Free Mem ${color_ram}${ram} ${color_gray}HDD ${color_green}%s${color_gray}
+${color_blue}                   ${color_gray}SSH umbrel@${color_green}${local_ip}${color_gray}
+${color_blue}      =.   =.      ${color_gray}
+${color_blue}      =.   =.      ${color_gray}${network} ${color_green}${networkVersion} ${color_gray}${chain}net ${networkConnectionsInfo}
+${color_blue}      =:  .=.      ${color_gray}Blocks ${blockInfo::-1} ${color_gray}Sync ${sync_color}${sync} %s
+${color_blue}                   ${color_gray}
+${color_blue}                   ${color_gray}LND ${color_green}${ln_version} ${ln_baseInfo}
+${color_blue}                   ${color_gray}${ln_channelInfo} ${ln_peersInfo}
+${color_blue}                   ${color_gray}${ln_feeReport}
+$lastLine
+" \
+"Umbrel ${codeVersion}" \
+"------------------------------------" \
+"Refreshed: ${datetime}" \
+"CPU load${load##up*,  }" "${tempC}" \
+"${hddUsedInfo}" "${sync_percentage}"
